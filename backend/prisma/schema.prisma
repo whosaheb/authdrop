@@ -1,0 +1,193 @@
+// AuthDrop data model (PostgreSQL, Prisma 7).
+// Connection URL lives in prisma.config.ts; the runtime uses the @prisma/adapter-pg driver adapter.
+
+generator client {
+  provider            = "prisma-client"
+  output              = "../src/generated/prisma"
+  moduleFormat        = "esm"
+  importFileExtension = "js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum UserRole {
+  USER
+  DEVELOPER
+  ADMIN
+}
+
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+}
+
+enum Gender {
+  MALE
+  FEMALE
+  NON_BINARY
+  OTHER
+  PREFER_NOT_TO_SAY
+}
+
+enum ClientType {
+  CONFIDENTIAL
+  PUBLIC
+}
+
+enum TokenEndpointAuthMethod {
+  CLIENT_SECRET_BASIC
+  CLIENT_SECRET_POST
+  NONE
+}
+
+enum SocialProviderType {
+  GOOGLE
+  GITHUB
+  FACEBOOK
+  LINKEDIN
+}
+
+enum ConsentStatus {
+  GRANTED
+  REVOKED
+}
+
+enum AuditOutcome {
+  SUCCESS
+  FAILURE
+}
+
+model User {
+  id              String     @id @default(uuid(7))
+  /// Always stored lower-cased and trimmed.
+  email           String     @unique
+  emailVerifiedAt DateTime?
+  firstName       String
+  lastName        String
+  gender          Gender?
+  dateOfBirth     DateTime?  @db.Date
+  avatarKey       String?
+  avatarUrl       String?
+  role            UserRole   @default(USER)
+  status          UserStatus @default(ACTIVE)
+
+  /// AES-256-GCM encrypted base32 TOTP secret (never stored in plaintext).
+  totpSecretEnc String?
+  totpEnabled   Boolean   @default(false)
+  totpEnabledAt DateTime?
+
+  lastLoginAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  backupCodes    BackupCode[]
+  socialAccounts SocialAccount[]
+  clients        Client[]
+  consents       UserClientConsent[]
+
+  @@map("users")
+}
+
+model BackupCode {
+  id        String    @id @default(uuid(7))
+  userId    String
+  /// HMAC-SHA256 of the code with the server pepper; plaintext is shown once.
+  codeHash  String
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("backup_codes")
+}
+
+model SocialAccount {
+  id             String             @id @default(uuid(7))
+  userId         String
+  provider       SocialProviderType
+  providerUserId String
+  email          String?
+  createdAt      DateTime           @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerUserId])
+  @@index([userId])
+  @@map("social_accounts")
+}
+
+model Client {
+  id                     String                  @id @default(uuid(7))
+  clientId               String                  @unique
+  /// AES-256-GCM encrypted secret (oidc-provider needs the plaintext at runtime). Null for public clients.
+  clientSecretEnc        String?
+  name                   String
+  clientType             ClientType              @default(CONFIDENTIAL)
+  tokenEndpointAuthMethod TokenEndpointAuthMethod @default(CLIENT_SECRET_BASIC)
+  redirectUris           String[]
+  postLogoutRedirectUris String[]
+  ownerId                String
+  createdAt              DateTime                @default(now())
+  updatedAt              DateTime                @updatedAt
+
+  owner    User                @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  consents UserClientConsent[]
+
+  @@index([ownerId])
+  @@map("clients")
+}
+
+/// Tracks whether a user currently allows a client. REVOKED forces an explicit consent prompt next time.
+model UserClientConsent {
+  id        String        @id @default(uuid(7))
+  userId    String
+  clientId  String
+  status    ConsentStatus @default(GRANTED)
+  updatedAt DateTime      @updatedAt
+  createdAt DateTime      @default(now())
+
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  client Client @relation(fields: [clientId], references: [clientId], onDelete: Cascade)
+
+  @@unique([userId, clientId])
+  @@map("user_client_consents")
+}
+
+/// oidc-provider "Grant" model persisted in PostgreSQL (tokens/sessions live in Redis).
+model OidcGrant {
+  id        String   @id
+  accountId String
+  clientId  String
+  payload   Json
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([accountId])
+  @@index([expiresAt])
+  @@map("oidc_grants")
+}
+
+/// Append-only, hash-chained audit trail (SOC 2: CC7.2 / CC7.3).
+model AuditLog {
+  id         BigInt       @id @default(autoincrement())
+  occurredAt DateTime     @default(now())
+  event      String
+  outcome    AuditOutcome
+  actorId    String?
+  targetType String?
+  targetId   String?
+  ip         String?
+  userAgent  String?
+  requestId  String?
+  metadata   Json?
+  prevHash   String?
+  hash       String
+
+  @@index([event, occurredAt])
+  @@index([actorId, occurredAt])
+  @@index([targetType, targetId, occurredAt])
+  @@map("audit_logs")
+}

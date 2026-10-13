@@ -1,0 +1,81 @@
+# Local development infrastructure:   docker compose up -d
+# Full stack (API + web on :8080):    docker compose --profile app up -d --build
+# Mailpit UI (read OTP e-mails):      http://localhost:8025
+name: authdrop
+
+x-backend-env: &backend-env
+  NODE_ENV: production
+  APP_URL: ${APP_URL:-http://localhost:8080}
+  TRUST_PROXY: "true"
+  DATABASE_URL: postgresql://authdrop:${POSTGRES_PASSWORD:-authdrop}@postgres:5432/authdrop?schema=public
+  REDIS_URL: redis://:${REDIS_PASSWORD:-authdrop}@redis:6379
+  SMTP_HOST: mailpit
+  SMTP_PORT: "1025"
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: authdrop
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-authdrop}
+      POSTGRES_DB: authdrop
+    ports: ["127.0.0.1:5432:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U authdrop -d authdrop"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD:-authdrop}", "--appendonly", "yes"]
+    ports: ["127.0.0.1:6379:6379"]
+    volumes: [redisdata:/data]
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a ${REDIS_PASSWORD:-authdrop} --no-auth-warning ping | grep PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  mailpit:
+    image: axllent/mailpit:latest
+    ports: ["127.0.0.1:1025:1025", "127.0.0.1:8025:8025"]
+
+  migrate:
+    profiles: [app]
+    build: { context: ./backend, target: migrate }
+    environment:
+      DATABASE_URL: postgresql://authdrop:${POSTGRES_PASSWORD:-authdrop}@postgres:5432/authdrop?schema=public
+    depends_on: { postgres: { condition: service_healthy } }
+    restart: "no"
+
+  backend:
+    profiles: [app]
+    build: { context: ./backend, target: runtime }
+    env_file: ./backend/.env
+    environment: *backend-env
+    volumes: ["./backend/secrets:/app/secrets:ro"]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
+    restart: unless-stopped
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+
+  web:
+    profiles: [app]
+    build: { context: ./frontend }
+    ports: ["8080:8080"]
+    depends_on: [backend]
+    restart: unless-stopped
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+
+volumes:
+  pgdata:
+  redisdata:
