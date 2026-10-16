@@ -9,8 +9,8 @@ x-backend-env: &backend-env
   TRUST_PROXY: "true"
   DATABASE_URL: postgresql://authdrop:${POSTGRES_PASSWORD:-authdrop}@postgres:5432/authdrop?schema=public
   REDIS_URL: redis://:${REDIS_PASSWORD:-authdrop}@redis:6379
-  SMTP_HOST: mailpit
-  SMTP_PORT: "1025"
+  # SMTP_HOST: mailpit
+  # SMTP_PORT: "1025"
 
 services:
   postgres:
